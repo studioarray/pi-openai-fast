@@ -6,6 +6,7 @@ import type { FastColorValue } from "./fast-colors.ts";
 import type { FastStateTransition, RequestedFastInactiveEvent } from "./fast-state-engine.ts";
 import { FastLabelFormatter } from "./fast-label-formatter.ts";
 import { FooterClone, type FooterCloneContext, type FooterCloneTheme } from "./footer-clone.ts";
+import type { FooterUsageTracker } from "./footer-usage-tracker.ts";
 
 export type FooterFeedbackNoticeType = "info" | "warning" | "error";
 
@@ -17,6 +18,7 @@ export interface FooterFeedbackSyncOptions {
   context: FooterCloneContext;
   isFastActive: () => boolean;
   getThinkingLevel: () => string | undefined;
+  usageTracker?: FooterUsageTracker | undefined;
   fastLabelColors?: {
     dark?: FastColorValue | undefined;
     light?: FastColorValue | undefined;
@@ -147,6 +149,7 @@ export class FooterFeedback {
         labelFormatter: this.labelFormatter,
         isFastActive: () => this.latestSyncOptions?.isFastActive() === true,
         getThinkingLevel: () => this.latestSyncOptions?.getThinkingLevel(),
+        usageTracker: this.latestSyncOptions?.usageTracker,
         fastLabelColors: this.latestSyncOptions?.fastLabelColors,
         tui,
       });

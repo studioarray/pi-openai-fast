@@ -200,7 +200,7 @@ function createHarness(config, options = {}) {
     },
   };
 
-  registerPiOpenAIFast(pi, { configStore });
+  registerPiOpenAIFast(pi, { configStore, footerUsageTracker: options.footerUsageTracker });
 
   return { commands, handlers, flags, flagValues, configStore };
 }
@@ -288,6 +288,76 @@ test("lifecycle keeps settings JSON-only by not registering an interactive setti
 
   assert.equal(harness.commands.has("fast"), true);
   assert.equal(harness.commands.has("openai-fast-settings"), false);
+});
+
+test("lifecycle maintains footer usage outside the render path", async () => {
+  const calls = [];
+  const footerUsageTracker = {
+    reset(sessionManager) {
+      calls.push(["reset", sessionManager]);
+    },
+    recordMessage(sessionManager, message) {
+      calls.push(["message", sessionManager, message]);
+    },
+    clear() {
+      calls.push(["clear"]);
+    },
+  };
+  const harness = createHarness(
+    {
+      persistState: true,
+      desiredActive: false,
+      supportedModels: ["partner/gpt-5.5"],
+      footer: { mode: "replace", vars: {} },
+    },
+    { footerUsageTracker },
+  );
+  const { ctx } = createContext({
+    currentModel: { provider: "partner", id: "gpt-5.5", reasoning: true, contextWindow: 200_000 },
+  });
+  const message = { role: "assistant", usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } };
+
+  await emit(harness, "session_start", { type: "session_start" }, ctx);
+  await emit(harness, "message_end", { type: "message_end", message }, ctx);
+  await emit(harness, "agent_end", { type: "agent_end", messages: [message] }, ctx);
+  await emit(harness, "session_shutdown", { type: "session_shutdown" }, ctx);
+
+  assert.deepEqual(calls, [
+    ["reset", ctx.sessionManager],
+    ["message", ctx.sessionManager, message],
+    ["reset", ctx.sessionManager],
+    ["clear"],
+  ]);
+});
+
+test("status and off modes do not scan session entries for replacement-footer usage", async () => {
+  for (const mode of ["status", "off"]) {
+    const calls = [];
+    const footerUsageTracker = {
+      reset() { calls.push("reset"); },
+      recordMessage() { calls.push("message"); },
+      clear() { calls.push("clear"); },
+    };
+    const harness = createHarness(
+      {
+        persistState: true,
+        desiredActive: false,
+        supportedModels: ["partner/gpt-5.5"],
+        footer: { mode, vars: {} },
+      },
+      { footerUsageTracker },
+    );
+    const { ctx } = createContext({
+      currentModel: { provider: "partner", id: "gpt-5.5", reasoning: true, contextWindow: 200_000 },
+    });
+
+    await emit(harness, "session_start", { type: "session_start" }, ctx);
+    await emit(harness, "message_end", { type: "message_end", message: { role: "assistant" } }, ctx);
+    await emit(harness, "agent_end", { type: "agent_end", messages: [] }, ctx);
+    assert.deepEqual(calls, [], `${mode} mode unexpectedly maintained replacement-footer usage`);
+    await emit(harness, "session_shutdown", { type: "session_shutdown" }, ctx);
+    assert.deepEqual(calls, ["clear"]);
+  }
 });
 
 test("replace footer clone installs on startup while inactive and updates active label without reinstall", async () => {

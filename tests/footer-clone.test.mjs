@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { FooterClone } from "../src/footer-clone.ts";
 import { FastLabelFormatter } from "../src/fast-label-formatter.ts";
+import { FooterUsageTracker } from "../src/footer-usage-tracker.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -109,6 +110,7 @@ function createClone({
   thinkingLevel = "xhigh",
   getThinkingLevel,
   fastLabelColors,
+  usageTracker,
 } = {}) {
   return new FooterClone({
     context,
@@ -118,6 +120,7 @@ function createClone({
     isFastActive: () => active,
     getThinkingLevel: getThinkingLevel ?? (() => thinkingLevel),
     fastLabelColors,
+    usageTracker,
   });
 }
 
@@ -165,6 +168,115 @@ test("branch change subscription is disposed when footer clone unmounts", () => 
   clone.dispose();
   listeners.forEach((listener) => listener());
   assert.equal(renderRequests.value, 1);
+});
+
+test("repeated renders reuse event-driven usage without rescanning session entries", () => {
+  let inspectedEntries = 0;
+  let getEntriesCalls = 0;
+  const countedAssistantEntry = (usage) => ({
+    get type() {
+      inspectedEntries += 1;
+      return "message";
+    },
+    message: { role: "assistant", usage },
+  });
+  const entries = [
+    countedAssistantEntry({ input: 1000, output: 2000, cost: { total: 0.01 } }),
+    countedAssistantEntry({ input: 500, output: 250, cost: { total: 0.02 } }),
+  ];
+  const context = createContext({
+    sessionManager: {
+      getCwd: () => "/Users/alice/project",
+      getSessionName: () => "cache-test",
+      getEntries: () => {
+        getEntriesCalls += 1;
+        return entries;
+      },
+    },
+  });
+  const usageTracker = new FooterUsageTracker();
+  const clone = createClone({ context, usageTracker });
+
+  const first = clone.render(120).join("\n");
+  assert.equal(getEntriesCalls, 1);
+  assert.equal(inspectedEntries, 2);
+  assert.match(first, /↑1\.5k/);
+  assert.match(first, /↓2\.3k/);
+  assert.match(first, /\$0\.030/);
+
+  const second = clone.render(80).join("\n");
+  assert.equal(getEntriesCalls, 1);
+  assert.equal(inspectedEntries, 2);
+  assert.match(second, /↑1\.5k/);
+
+  entries.push(countedAssistantEntry({ input: 500, output: 750, cost: { total: 0.04 } }));
+  usageTracker.reset(context.sessionManager);
+  const third = clone.render(120).join("\n");
+  assert.equal(getEntriesCalls, 2);
+  assert.equal(inspectedEntries, 5);
+  assert.match(third, /↑2\.0k/);
+  assert.match(third, /↓3\.0k/);
+  assert.match(third, /\$0\.070/);
+});
+
+test("message lifecycle updates usage without rescanning session entries", () => {
+  let getEntriesCalls = 0;
+  const entries = [assistantEntry({ input: 1000, output: 2000, cost: { total: 0.01 } })];
+  const sessionManager = {
+    getCwd: () => "/Users/alice/project",
+    getSessionName: () => "event-cache-test",
+    getEntries: () => {
+      getEntriesCalls += 1;
+      return entries;
+    },
+  };
+  const usageTracker = new FooterUsageTracker();
+  const clone = createClone({ context: createContext({ sessionManager }), usageTracker });
+
+  for (let index = 0; index < 500; index += 1) clone.render(120);
+  assert.equal(getEntriesCalls, 1);
+
+  usageTracker.recordMessage(sessionManager, assistantEntry({
+    input: 500,
+    output: 250,
+    cost: { total: 0.02 },
+  }).message);
+  const changed = clone.render(120).join("\n");
+  assert.equal(getEntriesCalls, 1);
+  assert.match(changed, /↑1\.5k/);
+  assert.match(changed, /↓2\.3k/);
+  assert.match(changed, /\$0\.030/);
+});
+
+test("event-driven usage cache remains scoped to the session manager identity", () => {
+  let firstCalls = 0;
+  let secondCalls = 0;
+  const manager = (input, count) => ({
+    getCwd: () => "/Users/alice/project",
+    getSessionName: () => "manager-identity-test",
+    getEntries: () => {
+      count.value += 1;
+      return [assistantEntry(input)];
+    },
+  });
+  const firstCount = { get value() { return firstCalls; }, set value(value) { firstCalls = value; } };
+  const secondCount = { get value() { return secondCalls; }, set value(value) { secondCalls = value; } };
+  let context = createContext({ sessionManager: manager({ input: 1000 }, firstCount) });
+  const clone = new FooterClone({
+    getContext: () => context,
+    footerData: createFooterData(),
+    theme: createTheme(),
+    labelFormatter: new FastLabelFormatter(),
+    isFastActive: () => false,
+    getThinkingLevel: () => "xhigh",
+  });
+
+  clone.render(120);
+  context = createContext({ sessionManager: manager({ input: 2000 }, secondCount) });
+  const second = clone.render(120).join("\n");
+  assert.equal(firstCalls, 1);
+  assert.equal(secondCalls, 1);
+  assert.match(second, /↑2\.0k/);
 });
 
 test("inactive clone preserves Pi default footer information without a fast label", () => {

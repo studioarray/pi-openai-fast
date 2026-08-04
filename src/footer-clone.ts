@@ -2,6 +2,14 @@ import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/p
 import type { FastLabelFormatter } from "./fast-label-formatter.ts";
 import type { FastColorMode, FastColorValue } from "./fast-colors.ts";
 import {
+  FooterUsageTracker,
+  type FooterUsage as FooterCloneUsage,
+  type FooterUsageEntry as FooterCloneSessionEntry,
+  type FooterUsageSessionManager,
+} from "./footer-usage-tracker.ts";
+
+export type { FooterCloneUsage, FooterCloneSessionEntry };
+import {
   normalizeThinkingLevel,
   renderThemeMatchedFastLabel,
   type ThinkingLevel,
@@ -58,10 +66,9 @@ export interface FooterCloneContextUsage {
   contextWindow?: number | undefined;
 }
 
-export interface FooterCloneSessionManager {
+export interface FooterCloneSessionManager extends FooterUsageSessionManager {
   getCwd(): string;
   getSessionName(): string | undefined;
-  getEntries(): readonly FooterCloneSessionEntry[];
 }
 
 export interface FooterCloneModelRegistry {
@@ -82,22 +89,6 @@ export interface FooterCloneFooterData {
   onBranchChange?: (callback: () => void) => () => void;
 }
 
-export interface FooterCloneUsage {
-  input?: number | undefined;
-  output?: number | undefined;
-  cacheRead?: number | undefined;
-  cacheWrite?: number | undefined;
-  cost?: { total?: number | undefined } | undefined;
-}
-
-export interface FooterCloneSessionEntry {
-  type: string;
-  message?: {
-    role?: string | undefined;
-    usage?: FooterCloneUsage | undefined;
-  };
-}
-
 export interface FooterCloneOptions {
   context?: FooterCloneContext | undefined;
   getContext?: (() => FooterCloneContext | undefined) | undefined;
@@ -106,6 +97,7 @@ export interface FooterCloneOptions {
   labelFormatter: FastLabelFormatter;
   isFastActive: () => boolean;
   getThinkingLevel: () => string | undefined;
+  usageTracker?: FooterUsageTracker | undefined;
   fastLabelColors?: {
     dark?: FastColorValue;
     light?: FastColorValue;
@@ -135,10 +127,6 @@ function formatTokens(count: number): string {
   if (count < 1000000) return `${Math.round(count / 1000)}k`;
   if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
   return `${Math.round(count / 1000000)}M`;
-}
-
-function numberOrZero(value: number | undefined): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 const ANSI_FAST_LABEL_PATTERN = /\x1b\[[0-9;]*mfast\x1b\[39m/g;
@@ -192,6 +180,7 @@ export class FooterClone implements Component {
   private readonly isThemeLight: boolean;
   private readonly colorMode: FastColorMode;
   private readonly tui: FooterCloneTui | undefined;
+  private readonly usageTracker: FooterUsageTracker;
   private readonly disposeCallbacks: Array<() => void> = [];
   private ownedByExtension = true;
 
@@ -210,6 +199,7 @@ export class FooterClone implements Component {
     this.isThemeLight = options.theme.name?.toLowerCase() === "light";
     this.colorMode = options.theme.getColorMode?.() ?? "256color";
     this.tui = options.tui;
+    this.usageTracker = options.usageTracker ?? new FooterUsageTracker();
 
     if (typeof options.footerData.onBranchChange === "function") {
       const unsubscribe = options.footerData.onBranchChange(() => {
@@ -254,23 +244,13 @@ export class FooterClone implements Component {
       thinkingLevel: normalizeThinkingLevel(this.getThinkingLevel()),
     };
 
-    // Calculate cumulative usage from ALL session entries (not just post-compaction messages)
-    let totalInput = 0;
-    let totalOutput = 0;
-    let totalCacheRead = 0;
-    let totalCacheWrite = 0;
-    let totalCost = 0;
-
-    for (const entry of context.sessionManager.getEntries()) {
-      if (entry.type === "message" && entry.message?.role === "assistant") {
-        const usage = entry.message.usage;
-        totalInput += numberOrZero(usage?.input);
-        totalOutput += numberOrZero(usage?.output);
-        totalCacheRead += numberOrZero(usage?.cacheRead);
-        totalCacheWrite += numberOrZero(usage?.cacheWrite);
-        totalCost += numberOrZero(usage?.cost?.total);
-      }
-    }
+    // Usage is maintained from lifecycle events outside the render path.
+    const usageTotals = this.usageTracker.snapshot(context.sessionManager).totals;
+    const totalInput = usageTotals.input;
+    const totalOutput = usageTotals.output;
+    const totalCacheRead = usageTotals.cacheRead;
+    const totalCacheWrite = usageTotals.cacheWrite;
+    const totalCost = usageTotals.cost;
 
     // Calculate context usage from session (handles compaction correctly).
     // After compaction, tokens are unknown until the next LLM response.

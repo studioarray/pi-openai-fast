@@ -18,6 +18,7 @@ import { readFastDesiredHandoff, writeFastDesiredHandoff } from "./fast-desired-
 import { FastStateEngine } from "./fast-state-engine.ts";
 import { createFastWarningCollector, deliverFastWarnings, hasConfigWriteFailureWarning } from "./fast-warnings.ts";
 import { FooterFeedback } from "./footer-feedback.ts";
+import { FooterUsageTracker } from "./footer-usage-tracker.ts";
 import { ServiceTierInjector } from "./service-tier-injector.ts";
 import { isStartupFastOverrideRequested, registerStartupFastOverrideFlag } from "./startup-fast-override.ts";
 import { resolveStartupDesiredActive } from "./startup-fast-resolution.ts";
@@ -29,6 +30,7 @@ export interface PiOpenAIFastRuntimeOptions {
   stateEngine?: FastStateEngine;
   serviceTierInjector?: ServiceTierInjector;
   footerFeedback?: FooterFeedback;
+  footerUsageTracker?: FooterUsageTracker;
 }
 
 function cloneDefaultConfig(): FastConfig {
@@ -57,6 +59,7 @@ export function registerPiOpenAIFast(pi: ExtensionAPI, options: PiOpenAIFastRunt
     });
   const serviceTierInjector = options.serviceTierInjector ?? new ServiceTierInjector();
   const footerFeedback = options.footerFeedback ?? new FooterFeedback();
+  const footerUsageTracker = options.footerUsageTracker ?? new FooterUsageTracker();
 
   registerStartupFastOverrideFlag(pi);
 
@@ -107,6 +110,7 @@ export function registerPiOpenAIFast(pi: ExtensionAPI, options: PiOpenAIFastRunt
       },
       isFastActive: () => stateEngine.snapshot().active,
       getThinkingLevel: () => pi.getThinkingLevel(),
+      usageTracker: footerUsageTracker,
       fastLabelColors: {
         dark: currentConfig.footer.darkFastColor,
         light: currentConfig.footer.lightFastColor,
@@ -142,6 +146,7 @@ export function registerPiOpenAIFast(pi: ExtensionAPI, options: PiOpenAIFastRunt
       currentModel,
     });
     footerFeedback.notifyForTransition(transition, getNotifier(ctx.ui));
+    if (currentConfig.footer.mode === "replace") footerUsageTracker.reset(ctx.sessionManager);
     syncFooter(ctx, currentModel);
     return currentConfig;
   }
@@ -194,8 +199,23 @@ export function registerPiOpenAIFast(pi: ExtensionAPI, options: PiOpenAIFastRunt
     await loadConfig(ctx);
   });
 
+  pi.on("message_end", (event, ctx: ExtensionContext) => {
+    if (configLoadCoordinator.current.footer.mode === "replace") {
+      footerUsageTracker.recordMessage(ctx.sessionManager, event.message);
+    }
+  });
+
+  pi.on("agent_end", (_event, ctx: ExtensionContext) => {
+    // Reconcile once per completed run so extension message transforms or other
+    // lifecycle participants cannot leave the incremental snapshot stale.
+    if (configLoadCoordinator.current.footer.mode === "replace") {
+      footerUsageTracker.reset(ctx.sessionManager);
+    }
+  });
+
   pi.on("session_shutdown", async (_event, ctx: ExtensionContext) => {
     footerFeedback.cleanup(getUiForFooterFeedback(ctx.ui));
+    footerUsageTracker.clear();
   });
 
   pi.on("model_select", async (event: ModelSelectEvent, ctx: ExtensionContext) => {
