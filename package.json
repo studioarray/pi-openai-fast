@@ -1,6 +1,6 @@
 {
   "name": "pi-openai-fast",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Focused Pi extension for OpenAI Fast Mode priority service-tier requests.",
   "keywords": [
     "fast",
