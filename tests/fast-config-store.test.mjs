@@ -16,8 +16,14 @@ test("default config matches the PRD config contract", () => {
     supportedModels: [
       "openai/gpt-5.4",
       "openai/gpt-5.5",
+      "openai/gpt-6-astra",
+      "openai/gpt-6-sol",
+      "openai/gpt-6-luna",
       "openai-codex/gpt-5.4",
       "openai-codex/gpt-5.5",
+      "openai-codex/gpt-6-astra",
+      "openai-codex/gpt-6-sol",
+      "openai-codex/gpt-6-luna",
     ],
     footer: {
       mode: "replace",
